@@ -75,7 +75,7 @@ def generate_answer(query, engine):
     
     # 3. Generate
     logging.info("...Generating Answer via Ollama")
-    response = ollama.chat(model="llama3:8b", messages=[
+    response = ollama.chat(model="phi3", messages=[
         {'role': 'user', 'content': prompt},
     ])
     
