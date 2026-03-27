@@ -4,9 +4,7 @@ sentence-transformers
 spacy==3.7.2
 networkx
 cdlib
-leidenalg
 python-louvain
-ollama
 pypdf
 numpy
 scikit-learn
@@ -14,7 +12,9 @@ pyyaml
 pandas
 tqdm
 streamlit==1.32.0
-altair==4.2.2
+altair>=5.0.0
 rank-bm25
-
-https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
+langchain-text-splitters
+groq
+# Remove leidenalg if possible, or handle separately
+# Remove ollama — won't work on cloud

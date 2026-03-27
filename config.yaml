@@ -5,20 +5,20 @@ paths:
 
 models:
   embedding_model: "all-MiniLM-L6-v2"
-  llm_model: "llama3:8b"              
+  llm_model: "groq/llama3-8b-8192"    # ← Replace Ollama with Groq (free tier available)
   spacy_model: "en_core_web_sm"
 
 chunking:
-  buffer_size: 1          # Parameter 'b' in Algorithm 1 [cite: 410]
-  breakpoint_threshold: 0.5 # Threshold 'tau' for cosine distance [cite: 398]
-  max_tokens: 1024        # Max token limit per chunk [cite: 406]
-  overlap_tokens: 128     # Overlap for sub-chunks [cite: 406]
+  buffer_size: 1
+  breakpoint_threshold: 0.5
+  max_tokens: 1024
+  overlap_tokens: 128
 
 graph:
-  community_algorithm: "leiden" 
+  community_algorithm: "louvain"       # ← Replace leiden (needs C++ build) with louvain
 
 retrieval:
   top_k_local: 5
   top_k_global: 3
-  local_threshold_e: 0.3 # Threshold for Entity Similarity (Equation 4) [cite: 457]
-  local_threshold_d: 0.3 # Threshold for Chunk Similarity (Equation 4) [cite: 457]
+  local_threshold_e: 0.3
+  local_threshold_d: 0.3

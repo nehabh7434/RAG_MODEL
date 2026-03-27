@@ -2,124 +2,187 @@ import networkx as nx
 import spacy
 import pickle
 import yaml
-import community as community_louvain 
-from sentence_transformers import SentenceTransformer
-import ollama
 import os
+import community as community_louvain
+from sentence_transformers import SentenceTransformer
+from groq import Groq
+
 
 class KnowledgeGraphBuilder:
     def __init__(self, config_path="config.yaml"):
         with open(config_path, "r") as f:
             self.config = yaml.safe_load(f)
-        
+
         self.nlp = spacy.load(self.config['models']['spacy_model'])
         self.graph = nx.Graph()
         self.encoder = SentenceTransformer(self.config['models']['embedding_model'])
-        
+        self.groq_client = self._get_groq_client()
+
+        # Will be populated during build/detect/summarize
+        self.chunk_map = []
+        self.communities = {}
+        self.community_summaries = {}
+
+    # ------------------------------------------------------------------
+    # Groq client helper (same pattern as ambedkargpt1.py)
+    # ------------------------------------------------------------------
+    def _get_groq_client(self):
+        api_key = os.environ.get("GROQ_API_KEY")
+        if not api_key:
+            try:
+                import streamlit as st
+                api_key = st.secrets["GROQ_API_KEY"]
+            except Exception:
+                pass
+        if not api_key:
+            raise EnvironmentError(
+                "GROQ_API_KEY not found. "
+                "Set it as an environment variable or in Streamlit secrets."
+            )
+        return Groq(api_key=api_key)
+
+    # ------------------------------------------------------------------
+    # Load chunks
+    # ------------------------------------------------------------------
     def load_chunks(self):
         if not os.path.exists("processed/chunks.pkl"):
             raise FileNotFoundError("Chunks file not found. Run chunking first.")
-            
         with open("processed/chunks.pkl", "rb") as f:
             return pickle.load(f)
 
+    # ------------------------------------------------------------------
+    # Entity extraction
+    # ------------------------------------------------------------------
     def extract_entities(self, chunk):
-        """Extract Named Entities using SpaCy (Nodes)"""
+        """Extract Named Entities using SpaCy (Nodes)."""
         doc = self.nlp(chunk)
-        # Filtering for specific entity types relevant to the domain
-        entities = [ent.text.lower() for ent in doc.ents if ent.label_ in ["PERSON", "ORG", "GPE", "WORK_OF_ART", "EVENT"]]
-        return list(set(entities)) # Deduplicate
+        entities = [
+            ent.text.lower() for ent in doc.ents
+            if ent.label_ in ["PERSON", "ORG", "GPE", "WORK_OF_ART", "EVENT"]
+        ]
+        return list(set(entities))
 
+    # ------------------------------------------------------------------
+    # Graph construction
+    # ------------------------------------------------------------------
     def build_graph(self):
-        """Construct graph with Nodes and Edges"""
+        """Construct graph with Nodes and Edges."""
         chunks = self.load_chunks()
         print("Building Graph Nodes and Edges...")
-        
-        self.chunk_map = [] 
+
+        self.chunk_map = []
 
         for i, chunk in enumerate(chunks):
             entities = self.extract_entities(chunk)
-            self.chunk_map.append({"id": i, "text": chunk, "entities": entities, "embedding": None})
-            
-            # Add nodes
+            self.chunk_map.append({
+                "id": i,
+                "text": chunk,
+                "entities": entities,
+                "embedding": None
+            })
+
             for entity in entities:
                 self.graph.add_node(entity)
-            
-            # Add edges (connect all entities found in the same chunk)
+
             for j in range(len(entities)):
                 for k in range(j + 1, len(entities)):
                     if self.graph.has_edge(entities[j], entities[k]):
                         self.graph[entities[j]][entities[k]]['weight'] += 1
                     else:
                         self.graph.add_edge(entities[j], entities[k], weight=1)
-        
-        # Calculate embeddings for all chunks (for retrieval later)
+
+        # Batch-encode all chunks at once (faster than one-by-one)
         if self.chunk_map:
             texts = [c["text"] for c in self.chunk_map]
-            embeddings = self.encoder.encode(texts)
+            embeddings = self.encoder.encode(texts, show_progress_bar=True)
             for i, emb in enumerate(embeddings):
                 self.chunk_map[i]["embedding"] = emb
 
-        print(f"Graph built: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges.")
+        print(f"Graph built: {self.graph.number_of_nodes()} nodes, "
+              f"{self.graph.number_of_edges()} edges.")
         return self.graph
 
+    # ------------------------------------------------------------------
+    # Community detection (Louvain — no C++ build tools required)
+    # ------------------------------------------------------------------
     def detect_communities(self):
-        """Apply community detection (Leiden/Louvain)."""
+        """Apply Louvain community detection."""
         print("Detecting Communities...")
+
         if self.graph.number_of_nodes() == 0:
             print("Graph is empty. Skipping community detection.")
             self.communities = {}
             return
 
-        # Using Louvain for simplicity and stability
         partition = community_louvain.best_partition(self.graph)
-        
-        # Group entities by community
+
         self.communities = {}
         for entity, community_id in partition.items():
-            if community_id not in self.communities:
-                self.communities[community_id] = []
-            self.communities[community_id].append(entity)
-            
+            self.communities.setdefault(community_id, []).append(entity)
+
         print(f"Detected {len(self.communities)} communities.")
 
+    # ------------------------------------------------------------------
+    # Community summarisation via Groq
+    # ------------------------------------------------------------------
     def summarize_communities(self):
-        """Generate summaries for each community."""
-        print("Summarizing Communities (this may take time)...")
+        """Generate summaries for each community using Groq."""
+        print("Summarizing Communities (this may take a moment)...")
         self.community_summaries = {}
-        
+
         for com_id, entities in self.communities.items():
-            # Skip tiny communities to save time
-            if len(entities) < 3: 
+            # Skip tiny communities to save API calls & time
+            if len(entities) < 3:
                 continue
-                
-            # Create a prompt with entities
-            entity_list = ", ".join(entities[:20]) # Limit to top 20 to fit context
-            prompt = f"Summarize the relationship between these entities in the context of Dr. B.R. Ambedkar's work: {entity_list}"
-            
+
+            entity_list = ", ".join(entities[:20])  # cap at 20 to stay within context
+            prompt = (
+                f"Summarize the relationship between these entities "
+                f"in the context of Dr. B.R. Ambedkar's work: {entity_list}"
+            )
+
             try:
-                # Call Ollama
-                response = ollama.chat(model=self.config['models']['llm_model'], messages=[
-                    {'role': 'user', 'content': prompt},
-                ])
-                summary = response['message']['content']
-                
-                # Store summary and its embedding
+                response = self.groq_client.chat.completions.create(
+                    model="llama3-8b-8192",
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a scholarly assistant specialised in "
+                                "Dr. B.R. Ambedkar's writings and historical context. "
+                                "Be concise and factual."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.2,
+                    max_tokens=256,   # summaries don't need to be long
+                )
+                summary = response.choices[0].message.content
+
                 self.community_summaries[com_id] = {
                     "summary": summary,
                     "entities": entities,
                     "embedding": self.encoder.encode(summary)
                 }
+                print(f"  Community {com_id} summarised ({len(entities)} entities).")
+
             except Exception as e:
-                print(f"Error summarizing community {com_id}: {e}")
-        
+                print(f"  Error summarising community {com_id}: {e}")
+
+        print(f"Summarised {len(self.community_summaries)} communities.")
+
+    # ------------------------------------------------------------------
+    # Persist to disk
+    # ------------------------------------------------------------------
     def save(self):
+        os.makedirs("processed", exist_ok=True)
         data = {
             "graph": self.graph,
-            "chunk_map": self.chunk_map, 
+            "chunk_map": self.chunk_map,
             "communities": self.communities,
-            "community_summaries": self.community_summaries
+            "community_summaries": self.community_summaries,
         }
         with open("processed/knowledge_graph.pkl", "wb") as f:
             pickle.dump(data, f)
-        print("Knowledge Graph saved.")
+        print("Knowledge Graph saved to processed/knowledge_graph.pkl")

@@ -27,7 +27,7 @@ with st.sidebar:
     with st.spinner("Initializing Knowledge Graph..."):
         engine = load_engine()
     st.success("System Ready!")
-    st.info("Architecture: SemRAG\nModel: Llama3:8b\nSearch: Local + Global")
+    st.info("Architecture: SemRAG\nModel: Groq/Llama3-8b\nSearch: Local + Global")
 
 # Chat Interface
 if "messages" not in st.session_state:
